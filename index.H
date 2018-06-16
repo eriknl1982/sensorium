@@ -28,10 +28,16 @@ const char config_page[] PROGMEM = R"=====(
 				humidity topic: <input type='text' name='mqtt_topic_humidity' value='{7}'><br />
 				publish interval: <input type='text' name='publish_interval' value='{8}'><br />
 				<button type='submit'>save settings</button>
-
-
-		  	</form>
+			</form>
+			<br />
+			<button  onclick='startCalibration()'>Start CO2 zero calibration</button>
 		</div>
 	</body>
+	<script>
+		function startCalibration(){
+			alert('Calibration will now start. Make sure the sensorium is in a well ventilated room. Calibration will take 30 minutes, during calibration the sensorium will not send out any data and will nor respond on requests');
+			window.location.replace('/startCalibration');
+		}
+	</script>
 </html>
 )=====";

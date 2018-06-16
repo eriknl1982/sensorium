@@ -93,6 +93,17 @@ void handleRoot() {
   
 }
 
+//Mh-z14a calibration
+void startCalibration() {
+  Serial.println("Handling webserver request for startCalibration");
+  server.send(200, "text/html", "calibration in progress");
+
+  Serial.println("MH-z14a:Waiting half an hour before calibrating zero"); 
+  delay(1800000);
+  calibrateZero();
+  Serial.println("MH-z14a:Zero was calibrated");
+}
+
 
 void saveSettings() {
   Serial.println("Handling webserver request savesettings");
@@ -164,14 +175,6 @@ int readCO2() {
 
   memset(response, 0, 9);
   co2Serial.readBytes(response, 9);
-
-  /*
-  for (int i=0; i<9; i++) {
-    Serial.print(" 0x");
-    Serial.print(response[i], HEX);
-  }
-  Serial.println(" Response OK. Shifts="+String(shifts));
-  */
 
   if (response[1] != 0x86)
   {
@@ -301,9 +304,11 @@ void setup() {
   //if you get here you have connected to the WiFi
   Serial.println("connected...yeey :)");
 
- server.on("/", handleRoot);
- server.on("/saveSettings", saveSettings);
- server.begin();
+  //Define url's 
+  server.on("/", handleRoot);
+  server.on("/saveSettings", saveSettings);
+  server.on("/startCalibration", startCalibration);
+  server.begin();
 
  // wifiManager.resetSettings();
 
@@ -311,20 +316,7 @@ void setup() {
   disableABC();
   Serial.println("MH-z14a:Setting range to 5000"); 
   setRange5000();
-  Serial.println("MH-z14a:Waiting half an hour before calibrating zero"); 
-  //delay(1800000);
-  calibrateZero();
-  Serial.println("MH-z14a:Zero was calibrated");
-
-  //Expose as mdns
-  if (!MDNS.begin("sensorium")) {             // Start the mDNS responder for sensorium.local
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-      Serial.println("mDNS responder started");
-      MDNS.addService("http", "tcp", 80);
-  }
-
-
+  
   //read updated parameters
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
@@ -364,6 +356,14 @@ void setup() {
 
   Serial.println("local ip");
   Serial.println(WiFi.localIP());
+
+  //Expose as mdns
+  if (!MDNS.begin("sensorium1")) {             // Start the mDNS responder for sensorium.local
+    Serial.println("Error setting up MDNS responder!");
+  } else {
+      Serial.println("mDNS responder started");
+      MDNS.addService("http", "tcp", 80);
+  }
 
 }
 
