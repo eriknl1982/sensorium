@@ -96,15 +96,6 @@ void handleRoot() {
 
 void saveSettings() {
   Serial.println("Handling webserver request savesettings");
-  /*Serial.println(server.arg("mqtt_server"));
-  Serial.println(server.arg("mqtt_port"));
-  Serial.println(server.arg("mqtt_username"));
-  Serial.println(server.arg("mqtt_password"));
-  Serial.println(server.arg("mqtt_topic_co2"));
-  Serial.println(server.arg("mqtt_topic_humidity"));
-  Serial.println(server.arg("mqtt_temperature"));
-  Serial.println(server.arg("publish_interval"));
-  */
 
   //store the updates values in the json config file
     DynamicJsonBuffer jsonBuffer;
@@ -136,6 +127,9 @@ void saveSettings() {
   server.arg("mqtt_topic_co2").toCharArray(mqtt_topic_co2,40);
   server.arg("mqtt_topic_temperature").toCharArray(mqtt_topic_temperature,40);
   server.arg("mqtt_topic_humidity").toCharArray(mqtt_topic_humidity,40);
+
+  //mqtt settings might have changed, let's reconnect
+  reconnect();
   
   server.send(200, "text/html", "Settings have been saved and will be used upon the next sensor readout");
   
@@ -323,10 +317,13 @@ void setup() {
   Serial.println("MH-z14a:Zero was calibrated");
 
   //Expose as mdns
-  if (!MDNS.begin("sensorium")) {             // Start the mDNS responder for esp8266.local
+  if (!MDNS.begin("sensorium")) {             // Start the mDNS responder for sensorium.local
     Serial.println("Error setting up MDNS responder!");
+  } else {
+      Serial.println("mDNS responder started");
+      MDNS.addService("http", "tcp", 80);
   }
-  Serial.println("mDNS responder started");
+
 
   //read updated parameters
   strcpy(mqtt_server, custom_mqtt_server.getValue());
@@ -372,7 +369,42 @@ void setup() {
 
 
 void reconnect() {
-  int connectCount = 0;
+  client.setServer(mqtt_server, atoi(mqtt_port));
+  Serial.print("Attempting MQTT connection to ");
+  Serial.print(mqtt_server);
+  Serial.print(" on port ");
+  Serial.print(mqtt_port);
+  Serial.print("...");
+  
+  if (client.connect("ESP8266Client", mqtt_username, mqtt_password)) {
+      Serial.println("connected");
+   } else {
+     Serial.print("failed, rc=");
+     Serial.print(client.state());
+     Serial.println(" try again in 5 seconds");
+
+    unsigned long previousMillis1 = 0;
+
+     //Go into a loop until we are connected 
+     while (!client.connected()) {
+         server.handleClient();  //call to handle webserver connection needed, because the while loop will block the processor
+         unsigned long currentMillis1 = millis();
+         if(currentMillis1 - previousMillis1 >= 5000) {
+         previousMillis1 = currentMillis1;
+         Serial.print("Attempting MQTT connection...");
+          if (client.connect("ESP8266Client", mqtt_username, mqtt_password)) {
+                Serial.println("connected");
+             } else {
+                Serial.print("failed, rc=");
+                Serial.print(client.state());
+                Serial.println(" try again in 5 seconds");
+             }
+         }
+      }
+   }
+}
+
+/*
   // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
@@ -386,6 +418,7 @@ void reconnect() {
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
       // Wait 5 seconds before retrying
+      // initialize function to check if a reset is requested
       resetstate();
 
       unsigned long currentMillis = millis();
@@ -399,6 +432,7 @@ void reconnect() {
     }
   }
 }
+*/
 
 void resetstate (){
    resetState = digitalRead(12);
@@ -439,18 +473,20 @@ long lastMsg = 0;
 
 void loop() {
 
-  //voor de webserver
+  //for the webserver
   server.handleClient();
+
+  resetstate();
   
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
  
- resetstate();
+
 
   long now = millis();
-  //send a meaage every minute
+  //send a message every minute
   if (now - lastMsg > atoi(publish_interval) * 60 * 1000) {
     lastMsg = now;
     unsigned long currentMillis = millis();
