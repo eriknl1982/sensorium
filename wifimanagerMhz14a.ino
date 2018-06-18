@@ -11,11 +11,13 @@
 
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
-#include <PubSubClient.h>
+#include <PubSubClient.h>         //MQTT lib
 
+//needed for MH-Z14A
 #include <SoftwareSerial.h>
 #include <SPI.h>
-#include <Wire.h>
+#include <Wire.h>   //Hecked lib, because SCL / SDA pins are wrong way around
+
 #include <Si7021.h>
 
 #include <ESP8266mDNS.h>        // Include the mDNS library
@@ -50,9 +52,9 @@ byte mhzCmdMeasurementRange5000[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x13,0x88,0x
 int shifts=0,co2ppm;
 long previousMillis = 0;
 
-SoftwareSerial co2Serial(MH_Z19_RX, MH_Z19_TX); // define MH-Z19
+SoftwareSerial co2Serial(MH_Z19_RX, MH_Z19_TX); // define MH-Z14
 
-//define your default values here, if there are different values in config.json, they are overwritten.
+//custom patrameters for MH-Z14a
 char mqtt_server[40];
 char mqtt_port[6] ;
 char mqtt_username[40];
@@ -65,6 +67,7 @@ char mqtt_topic_humidity[40];
 //flag for saving data
 bool shouldSaveConfig = false;
 
+//MH-Z14a stuff
 byte checksum(byte response[9]){
   byte crc = 0;
   for (int i = 1; i < 8; i++) {
@@ -74,6 +77,7 @@ byte checksum(byte response[9]){
   return crc;
 }
 
+//Hande webserver root request
 void handleRoot() {
   Serial.println("Handling webserver request");
   
@@ -130,20 +134,19 @@ void saveSettings() {
     configFile.close();
 
     //put updated parameters into memory so they become effective immediately
-  server.arg("mqtt_server").toCharArray(mqtt_server,40);
-  server.arg("mqtt_port").toCharArray(mqtt_port,40);
-  server.arg("mqtt_username").toCharArray(mqtt_username,40);
-  server.arg("mqtt_password").toCharArray(mqtt_password,40);
-  server.arg("publish_interval").toCharArray(publish_interval,10);
-  server.arg("mqtt_topic_co2").toCharArray(mqtt_topic_co2,40);
-  server.arg("mqtt_topic_temperature").toCharArray(mqtt_topic_temperature,40);
-  server.arg("mqtt_topic_humidity").toCharArray(mqtt_topic_humidity,40);
+    server.arg("mqtt_server").toCharArray(mqtt_server,40);
+    server.arg("mqtt_port").toCharArray(mqtt_port,40);
+    server.arg("mqtt_username").toCharArray(mqtt_username,40);
+    server.arg("mqtt_password").toCharArray(mqtt_password,40);
+    server.arg("publish_interval").toCharArray(publish_interval,10);
+    server.arg("mqtt_topic_co2").toCharArray(mqtt_topic_co2,40);
+    server.arg("mqtt_topic_temperature").toCharArray(mqtt_topic_temperature,40);
+    server.arg("mqtt_topic_humidity").toCharArray(mqtt_topic_humidity,40);
 
-  //mqtt settings might have changed, let's reconnect
-  reconnect();
+    //mqtt settings might have changed, let's reconnect
+    reconnect();
   
-  server.send(200, "text/html", "Settings have been saved and will be used upon the next sensor readout");
-  
+    server.send(200, "text/html", "Settings have been saved and will be used upon the next sensor readout");
 }
 
 
@@ -163,6 +166,7 @@ void calibrateZero(){
  co2Serial.write(mhzCmdCalibrateZero, 9);
 }
 
+//Function to get CO2 from MH-Z14a
 int readCO2() {
   byte cmd[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
   byte response[9];
@@ -252,11 +256,6 @@ void setup() {
   }
   //end read
 
-
-
-  // The extra parameters to be configured (can be either global or just in the setup)
-  // After connecting, parameter.getValue() will get you the configured value
-  // id/name placeholder/prompt default length
   WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
   WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 5);
   WiFiManagerParameter custom_mqtt_username("username", "mqtt username", mqtt_username, 40);
@@ -266,10 +265,6 @@ void setup() {
   WiFiManagerParameter custom_mqtt_topic_temperature("topic_temperature", "mqtt topic temperature", mqtt_topic_temperature, 40);
   WiFiManagerParameter custom_mqtt_topic_humidity("topic_humidity", "mqtt topic humidity", mqtt_topic_humidity, 40);
 
-  //WiFiManager
-  //Local intialization. Once its business is done, there is no need to keep it around
-  //WiFiManager wifiManager;
-
   WiFiManagerParameter custom_text("<p>Fill the folowing values with your home assistant infromation. Username and password are optional</p>");
   wifiManager.addParameter(&custom_text);
 
@@ -278,7 +273,6 @@ void setup() {
 
   wifiManager.setAPCallback(configModeCallback);
   
-  //add all your parameters here
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_port);
   wifiManager.addParameter(&custom_mqtt_username);
@@ -291,7 +285,6 @@ void setup() {
 
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point with the specified name
-  //here  "AutoConnectAP"
   //and goes into a blocking loop awaiting configuration
   if (!wifiManager.autoConnect("Sensorium")) {
     Serial.println("failed to connect and hit timeout");
@@ -302,15 +295,13 @@ void setup() {
   }
 
   //if you get here you have connected to the WiFi
-  Serial.println("connected...yeey :)");
+  Serial.println("connected...!");
 
   //Define url's 
   server.on("/", handleRoot);
   server.on("/saveSettings", saveSettings);
   server.on("/startCalibration", startCalibration);
   server.begin();
-
- // wifiManager.resetSettings();
 
   Serial.println("MH-z14a: Disabling ABC");
   disableABC();
@@ -367,7 +358,7 @@ void setup() {
 
 }
 
-
+//MQTT reconnect function
 void reconnect() {
   client.setServer(mqtt_server, atoi(mqtt_port));
   Serial.print("Attempting MQTT connection to ");
@@ -404,36 +395,8 @@ void reconnect() {
    }
 }
 
-/*
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    // If you do not want to use a username and password, change next line to
-    // if (client.connect("ESP8266Client")) {
-    if (client.connect("ESP8266Client", mqtt_username, mqtt_password)) {
-      Serial.println("connected");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      // initialize function to check if a reset is requested
-      resetstate();
 
-      unsigned long currentMillis = millis();
-
-      //wait for 5 seconds, non blocking
-      if(currentMillis - previousMillis > 5000) {
-        previousMillis = currentMillis; 
-      }
-
-    
-    }
-  }
-}
-*/
-
+//Initialize a reset is pin 12 is low
 void resetstate (){
    resetState = digitalRead(12);
    if (resetState == LOW){
@@ -483,10 +446,8 @@ void loop() {
   }
   client.loop();
  
-
-
   long now = millis();
-  //send a message every minute
+  //send a message every publish_interval (publish_interval in minutes)
   if (now - lastMsg > atoi(publish_interval) * 60 * 1000) {
     lastMsg = now;
     unsigned long currentMillis = millis();
@@ -515,5 +476,5 @@ void loop() {
       client.publish(mqtt_topic_temperature, temperature.c_str());
       
      } 
-}
+  }
 }
