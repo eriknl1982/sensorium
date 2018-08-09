@@ -1,3 +1,4 @@
+
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #import "index.h"
 
@@ -63,6 +64,8 @@ char publish_interval[10];
 char mqtt_topic_co2[40];
 char mqtt_topic_temperature[40];
 char mqtt_topic_humidity[40];
+char temp_calibration[4] = "-2";
+char mqtt_status[60] = "unknown";
 
 //flag for saving data
 bool shouldSaveConfig = false;
@@ -77,7 +80,7 @@ byte checksum(byte response[9]){
   return crc;
 }
 
-//Hande webserver root request
+//Handle webserver root request
 void handleRoot() {
   Serial.println("Handling webserver request");
   
@@ -92,6 +95,8 @@ void handleRoot() {
   configPage.replace("{6}", mqtt_topic_temperature);
   configPage.replace("{7}", mqtt_topic_humidity);
   configPage.replace("{8}", publish_interval);
+  configPage.replace("{9}", temp_calibration);
+  configPage.replace("{10}", mqtt_status);
   
   server.send(200, "text/html", configPage);
   
@@ -123,6 +128,7 @@ void saveSettings() {
     json["mqtt_topic_co2"] = server.arg("mqtt_topic_co2");
     json["mqtt_topic_temperature"] = server.arg("mqtt_topic_temperature");
     json["mqtt_topic_humidity"] = server.arg("mqtt_topic_humidity");
+    json["temp_calibration"] = server.arg("temperature_calibration");
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -142,6 +148,7 @@ void saveSettings() {
     server.arg("mqtt_topic_co2").toCharArray(mqtt_topic_co2,40);
     server.arg("mqtt_topic_temperature").toCharArray(mqtt_topic_temperature,40);
     server.arg("mqtt_topic_humidity").toCharArray(mqtt_topic_humidity,40);
+    server.arg("temperature_calibration").toCharArray(temp_calibration,4);
 
     //mqtt settings might have changed, let's reconnect
     reconnect();
@@ -210,6 +217,7 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 
 
 void setup() {
+  pinMode(12, INPUT_PULLUP);
   si7021.begin();
   si7021.setHumidityRes(12);
   Serial.begin(115200);
@@ -245,6 +253,7 @@ void setup() {
           strcpy(mqtt_topic_co2, json["mqtt_topic_co2"]);
           strcpy(mqtt_topic_temperature, json["mqtt_topic_temperature"]);
           strcpy(mqtt_topic_humidity, json["mqtt_topic_humidity"]);
+          strcpy(temp_calibration, json["temp_calibration"]);
 
         } else {
           Serial.println("failed to load json config");
@@ -264,6 +273,7 @@ void setup() {
   WiFiManagerParameter custom_mqtt_topic_co2("topic_co2", "mqtt topic co2", mqtt_topic_co2, 40);
   WiFiManagerParameter custom_mqtt_topic_temperature("topic_temperature", "mqtt topic temperature", mqtt_topic_temperature, 40);
   WiFiManagerParameter custom_mqtt_topic_humidity("topic_humidity", "mqtt topic humidity", mqtt_topic_humidity, 40);
+  WiFiManagerParameter custom_temp_calibration("temp_calibration", "temperature_calibration", temp_calibration, 4);
 
   WiFiManagerParameter custom_text("<p>Fill the folowing values with your home assistant infromation. Username and password are optional</p>");
   wifiManager.addParameter(&custom_text);
@@ -281,6 +291,7 @@ void setup() {
   wifiManager.addParameter(&custom_mqtt_topic_co2);
   wifiManager.addParameter(&custom_mqtt_topic_temperature);
   wifiManager.addParameter(&custom_mqtt_topic_humidity);
+  wifiManager.addParameter(&custom_temp_calibration);
 
 
   //fetches ssid and pass and tries to connect
@@ -317,6 +328,7 @@ void setup() {
   strcpy(mqtt_topic_co2, custom_mqtt_topic_co2.getValue());
   strcpy(mqtt_topic_temperature, custom_mqtt_topic_temperature.getValue());
   strcpy(mqtt_topic_humidity, custom_mqtt_topic_humidity.getValue());
+  strcpy(temp_calibration, custom_temp_calibration.getValue());
 
   //save the custom parameters to FS
   if (shouldSaveConfig) {
@@ -331,6 +343,7 @@ void setup() {
     json["mqtt_topic_co2"] = mqtt_topic_co2;
     json["mqtt_topic_temperature"] = mqtt_topic_temperature;
     json["mqtt_topic_humidity"] = mqtt_topic_humidity;
+    json["temp_calibration"] = temp_calibration;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -345,8 +358,9 @@ void setup() {
 
   client.setServer(mqtt_server, atoi(mqtt_port));
 
-  Serial.println("local ip");
+  Serial.print("local ip: ");
   Serial.println(WiFi.localIP());
+  WiFi.hostname("Sensorium");
 
   //Expose as mdns
   if (!MDNS.begin("sensorium1")) {             // Start the mDNS responder for sensorium.local
@@ -368,8 +382,10 @@ void reconnect() {
   Serial.print("...");
   
   if (client.connect("ESP8266Client", mqtt_username, mqtt_password)) {
+      String("<div style=\"color:green;float:left\">connected</div>").toCharArray(mqtt_status,60);
       Serial.println("connected");
    } else {
+     String("<div style=\"color:red;float:left\">connection failed</div>").toCharArray(mqtt_status,60);
      Serial.print("failed, rc=");
      Serial.print(client.state());
      Serial.println(" try again in 5 seconds");
@@ -399,8 +415,8 @@ void reconnect() {
 //Initialize a reset is pin 12 is low
 void resetstate (){
    resetState = digitalRead(12);
-   if (resetState == LOW){
-    Serial.println("It seems someone wants to go for a reset...");
+   //if (resetState == LOW){
+   // Serial.println("It seems someone wants to go for a reset...");
    //stuff below doesn't work yet, since the ESP built in led is connected to pin 2, but the octocoupler is too...
     
     /*int count = 0;
@@ -423,16 +439,18 @@ void resetstate (){
        Serial.println("They chickened out...");
     }
     */
-    SPIFFS.format();
-    wifiManager.resetSettings();
-    delay(500);
-    ESP.restart();     
+   // SPIFFS.format();
+   /// wifiManager.resetSettings();
+   // delay(500);
+   // ESP.restart();     
     
-  }
+  //}
 }
 
 
 long lastMsg = 0;
+int mhz14aErrorcount = 0;
+float f_temperature;
 
 void loop() {
 
@@ -460,19 +478,26 @@ void loop() {
 
       //If no proper co2 value is returned, try again
       while (co2ppm == -1){
+        mhz14aErrorcount++;
+        if (mhz14aErrorcount == 10){
+           Serial.println("too many errors, rebooting");
+           ESP.restart();           
+        }
         Serial.println("re-Requesting CO2 concentration...");
         co2ppm = readCO2();  
       }
       
-      Serial.println(String(mqtt_topic_co2) + ':' + String(co2ppm));
+      Serial.println("Sending " + String(co2ppm) + " to " + mqtt_server + " on port " + mqtt_port + " with topic:" + mqtt_topic_co2);
       client.publish(mqtt_topic_co2, String(co2ppm).c_str(), true);
 
       String humidity = String(si7021.readHumidity(),true);
-      Serial.println(String(mqtt_topic_humidity) + ":" + humidity);
+      Serial.println("Sending " + humidity + " to " + mqtt_server + " on port " + mqtt_port + " with topic:" + mqtt_topic_humidity);
       client.publish(mqtt_topic_humidity, humidity.c_str());
 
-      String temperature = String(si7021.readTemp(),true);
-      Serial.println(String(mqtt_topic_temperature) + ":" + temperature);
+      f_temperature = si7021.readTemp();
+      String temperature = String((si7021.readTemp()) + atof(temp_calibration),true);
+      Serial.println("Sending " + temperature + " to " + mqtt_server + " on port " + mqtt_port + " with topic:" + mqtt_topic_temperature + " using calibration value " + String(temp_calibration) + " actual readout was " + f_temperature);
+      
       client.publish(mqtt_topic_temperature, temperature.c_str());
       
      } 
